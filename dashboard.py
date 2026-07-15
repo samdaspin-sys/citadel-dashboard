@@ -78,7 +78,14 @@ def fetch_all(force=False):
                 "participants": me.get("participants") or [],
                 "standings": [
                     {"name": c.get("name"), "tag": c.get("tag"),
-                     "fame": c.get("fame"), "points": c.get("periodPoints")}
+                     "fame": c.get("fame"), "points": c.get("periodPoints"),
+                     "parts": [
+                         {"name": p.get("name"), "tag": p.get("tag"),
+                          "decks": p.get("decksUsed", 0),
+                          "today": p.get("decksUsedToday", 0),
+                          "fame": p.get("fame", 0)}
+                         for p in (c.get("participants") or [])
+                     ]}
                     for c in (wr.get("clans") or [])
                 ],
             }
@@ -495,7 +502,55 @@ async function openPlayer(tag,name){
   }
 }
 
+async function openScout(tag,name){
+  const ov=document.getElementById('ov');
+  document.getElementById('pname').textContent='⚔ '+name;
+  document.getElementById('pbody').innerHTML='<div class="loading">Scouting the enemy…</div>';
+  ov.classList.add('open');
+  try{
+    const r=await fetch('/api/scout?tag='+tag);
+    const cl=await r.json();
+    if(cl.error){document.getElementById('pbody').innerHTML=
+      '<div class="loading">Could not scout ('+cl.error+').</div>';return;}
+    const mem=cl.memberList||[];
+    const avg=Math.round(mem.reduce((s,m)=>s+(m.trophies||0),0)/(mem.length||1));
+    const weekly=mem.reduce((s,m)=>s+(m.donations||0),0);
+    const stats=[
+      ['Clan score',(cl.clanScore||0).toLocaleString()],
+      ['War trophies',cl.clanWarTrophies??'—'],
+      ['Members',(cl.members||mem.length)+'/50'],
+      ['Avg trophies',avg.toLocaleString()],
+      ['Weekly donations',weekly.toLocaleString()],
+      ['To join',(cl.requiredTrophies||0).toLocaleString()],
+    ];
+    let html='<div class="pgrid">'+stats.map(s=>
+      `<div class="pstat"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('')+'</div>';
+
+    // merge their war participation (already in standings data)
+    const warParts={};
+    const sd=(window._standings||{})[decodeURIComponent(tag)];
+    if(sd) (sd.parts||[]).forEach(p=>warParts[p.tag]=p);
+
+    html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Their roster — ranked by trophies</div>';
+    html+='<table class="bl"><tr style="font-weight:700"><td>#</td><td>Name</td><td>🏆</td><td>War decks</td><td>Fame</td></tr>';
+    mem.slice(0,50).forEach((m,i)=>{
+      const p=warParts[m.tag]||{};
+      const decks=p.decks!==undefined?p.decks:'—';
+      html+=`<tr><td>${i+1}</td><td>${m.name}</td>
+        <td>${(m.trophies||0).toLocaleString()}</td>
+        <td class="${decks===0?'l2':''}">${decks}</td>
+        <td>${p.fame!==undefined?p.fame.toLocaleString():'—'}</td></tr>`;
+    });
+    html+='</table>';
+    document.getElementById('pbody').innerHTML=html;
+  }catch(e){
+    document.getElementById('pbody').innerHTML='<div class="loading">Connection error.</div>';
+  }
+}
+
 document.addEventListener('click',e=>{
+  const sc=e.target.closest('tr.scout');
+  if(sc){openScout(sc.dataset.tag,sc.dataset.name);return;}
   const row=e.target.closest('.row.click');
   if(row) openPlayer(row.dataset.tag,row.dataset.name);
 });
@@ -565,11 +620,14 @@ function render(c){
 
   // current war standings
   if(inWar && (war.standings||[]).length){
-    html+=`<div class="bh"><h2>Current War</h2><span class="sub">RIVER RACE STANDINGS</span></div>`;
+    window._standings={};
+    war.standings.forEach(s=>window._standings[s.tag]=s);
+    html+=`<div class="bh"><h2>Current War</h2><span class="sub">RIVER RACE STANDINGS · CLICK A CLAN TO SCOUT</span></div>`;
     html+='<div class="panel" style="overflow-x:auto"><table class="wartbl"><tr><th>#</th><th>Clan</th><th>Fame</th><th>Points</th></tr>';
     const st=[...war.standings].sort((a,b)=>(b.fame||0)-(a.fame||0));
     st.forEach((s,i)=>{
-      html+=`<tr class="${s.tag===c.tag?'us':''}"><td>${i+1}</td><td>${s.name||''}</td>
+      html+=`<tr class="${s.tag===c.tag?'us':''} scout" data-tag="${encodeURIComponent(s.tag)}" data-name="${(s.name||'').replace(/"/g,'&quot;')}" style="cursor:pointer">
+        <td>${i+1}</td><td>${s.name||''}</td>
         <td>${(s.fame||0).toLocaleString()}</td><td>${(s.points||0).toLocaleString()}</td></tr>`;
     });
     html+='</table></div>';
@@ -647,6 +705,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/clan":
             self._send(200, json.dumps(fetch_all()), "application/json")
+        elif self.path.startswith("/api/scout"):
+            from urllib.parse import urlparse, parse_qs, unquote
+            q = parse_qs(urlparse(self.path).query)
+            tag = unquote((q.get("tag") or [""])[0])
+            if not tag.startswith("#"):
+                self._send(400, '{"error":"bad tag"}', "application/json")
+                return
+            headers = {"Authorization": f"Bearer {TOKEN}",
+                       "Accept": "application/json"}
+            r = _get(f"/clans/{quote(tag)}", headers)
+            body = r.json() if r.status_code == 200 else {"error": r.status_code}
+            self._send(200, json.dumps(body), "application/json")
         elif self.path.startswith("/api/player"):
             from urllib.parse import urlparse, parse_qs, unquote
             q = parse_qs(urlparse(self.path).query)
