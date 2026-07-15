@@ -120,6 +120,33 @@ def fetch_all(force=False):
     return clan
 
 
+def fetch_player(tag):
+    """Full player profile + recent battles for the detail pop-up."""
+    headers = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json"}
+    t = quote(tag.strip().upper())
+    r = _get(f"/players/{t}", headers)
+    if r.status_code != 200:
+        return {"error": r.status_code}
+    p = r.json()
+    try:
+        b = _get(f"/players/{t}/battlelog", headers)
+        if b.status_code == 200:
+            battles = []
+            for bt in b.json()[:10]:
+                me = (bt.get("team") or [{}])[0]
+                op = (bt.get("opponent") or [{}])[0]
+                battles.append({
+                    "type": bt.get("type", ""),
+                    "myCrowns": me.get("crowns", 0),
+                    "opCrowns": op.get("crowns", 0),
+                    "opName": op.get("name", ""),
+                })
+            p["_battles"] = battles
+    except requests.RequestException:
+        pass
+    return p
+
+
 def _seen_dt(s):
     if not s:
         return None
@@ -373,6 +400,27 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 .foot{text-align:center;margin-top:30px;font-family:'Space Mono';font-size:11px;color:var(--ash);letter-spacing:.1em}
 .err{background:rgba(217,58,43,.08);border:1px solid var(--red);color:var(--red2);
   padding:20px;text-align:center;font-family:'Space Mono';font-size:13px;margin-top:30px;line-height:1.6}
+.row.click{cursor:pointer}
+.overlay{position:fixed;inset:0;background:rgba(54,59,65,.55);display:none;
+  align-items:flex-start;justify-content:center;padding:40px 16px;z-index:50;overflow-y:auto}
+.overlay.open{display:flex}
+.card{background:var(--paper);border:2px solid var(--sumi);max-width:560px;width:100%;
+  box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.card-head{background:var(--sumi);color:#fff;padding:18px 22px;display:flex;
+  justify-content:space-between;align-items:center}
+.card-head h3{font-family:'Stardos Stencil';font-size:22px;letter-spacing:.03em}
+.card-head .x{cursor:pointer;font-family:'Space Mono';font-size:18px;color:#fff;
+  background:none;border:none;padding:4px 8px}
+.card-body{padding:20px 22px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:18px}
+.pstat{background:var(--panel);padding:12px 10px;text-align:center}
+.pstat .n{font-family:'Space Mono';font-weight:700;font-size:18px}
+.pstat .l{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ash);margin-top:4px}
+.bl{font-family:'Space Mono';font-size:12px;width:100%;border-collapse:collapse}
+.bl td{padding:7px 6px;border-bottom:1px solid var(--line)}
+.bl .w{color:var(--green);font-weight:700}.bl .l2{color:var(--red);font-weight:700}
+.loading{text-align:center;padding:30px;font-family:'Space Mono';font-size:12px;color:var(--ash)}
 @media(max-width:720px){
   .row{grid-template-columns:30px 1fr 84px;gap:10px}
   .trophies,.cell{display:none}
@@ -391,8 +439,67 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 </div>
 <div class="rule"></div>
 <div id="body"></div>
-<div class="foot">THE CITADEL · INTELLIGENCE BOARD · REFRESHES EVERY 60s</div>
+<div class="foot">THE CITADEL · INTELLIGENCE BOARD · REFRESHES EVERY 60s · CLICK A MEMBER FOR THEIR RECORD</div>
 </div>
+<div class="overlay" id="ov" onclick="if(event.target===this)closeCard()">
+  <div class="card">
+    <div class="card-head"><h3 id="pname">Player</h3>
+      <button class="x" onclick="closeCard()">✕</button></div>
+    <div class="card-body" id="pbody"><div class="loading">Summoning record…</div></div>
+  </div>
+</div>
+<script>
+function closeCard(){document.getElementById('ov').classList.remove('open');}
+
+async function openPlayer(tag,name){
+  const ov=document.getElementById('ov');
+  document.getElementById('pname').textContent=name;
+  document.getElementById('pbody').innerHTML='<div class="loading">Summoning record…</div>';
+  ov.classList.add('open');
+  try{
+    const r=await fetch('/api/player?tag='+tag);
+    const p=await r.json();
+    if(p.error){document.getElementById('pbody').innerHTML=
+      '<div class="loading">Could not load ('+p.error+').</div>';return;}
+    const wins=p.wins||0, losses=p.losses||0;
+    const wr=wins+losses?Math.round(wins/(wins+losses)*100):0;
+    const stats=[
+      ['Level',p.expLevel??'—'],['Trophies',(p.trophies||0).toLocaleString()],
+      ['Best',(p.bestTrophies||0).toLocaleString()],['Wins',wins.toLocaleString()],
+      ['Losses',losses.toLocaleString()],['Win rate',wr+'%'],
+      ['3-crown wins',(p.threeCrownWins||0).toLocaleString()],
+      ['Max challenge wins',p.challengeMaxWins??'—'],
+      ['Total donations',(p.totalDonations||0).toLocaleString()],
+      ['Battles',(p.battleCount||0).toLocaleString()],
+    ];
+    let html='<div class="pgrid">'+stats.map(s=>
+      `<div class="pstat"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('')+'</div>';
+    if(p.currentDeck&&p.currentDeck.length){
+      html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Current deck</div>';
+      html+='<div style="font-size:13px;line-height:1.7;margin-bottom:16px">'+
+        p.currentDeck.map(c=>c.name).join(' · ')+'</div>';
+    }
+    if(p._battles&&p._battles.length){
+      html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Recent battles</div>';
+      html+='<table class="bl">';
+      for(const b of p._battles){
+        const won=b.myCrowns>b.opCrowns;
+        html+=`<tr><td class="${won?'w':'l2'}">${won?'WIN':'LOSS'}</td>
+          <td>${b.myCrowns}–${b.opCrowns}</td><td>vs ${b.opName}</td></tr>`;
+      }
+      html+='</table>';
+    }
+    document.getElementById('pbody').innerHTML=html;
+  }catch(e){
+    document.getElementById('pbody').innerHTML='<div class="loading">Connection error.</div>';
+  }
+}
+
+document.addEventListener('click',e=>{
+  const row=e.target.closest('.row.click');
+  if(row) openPlayer(row.dataset.tag,row.dataset.name);
+});
+</script>
 <script>
 const ROLE={leader:{c:'var(--red)',label:'Leader'},coLeader:{c:'var(--sumi)',label:'Co-leader'},
   elder:{c:'var(--bronze)',label:'Elder'},member:{c:'var(--ash)',label:'Member'}};
@@ -478,11 +585,12 @@ function render(c){
     const g=m.donations||0, rec=record[m.tag]||{tot:0,missed:0,played:0};
     const seen=ago(m.lastSeen);
     const p=parts[m.tag]||{}; const used=p.decksUsed||0;
-    html+=`<div class="row">
+    const lvl=(m.expLevel&&m.expLevel>0)?` · lvl ${m.expLevel}`:'';
+    html+=`<div class="row click" data-tag="${encodeURIComponent(m.tag)}" data-name="${m.name.replace(/"/g,'&quot;')}">
       <div class="rank ${m.clanRank<=3?'top':''}">${m.clanRank}</div>
       <div class="who">
         <div class="name"><span class="shield" style="background:${role.c}"></span>${m.name}</div>
-        <div class="role">${role.label} · lvl ${m.expLevel} · <span class="${seen.days>=3?'away':''}">${seen.txt}</span></div>
+        <div class="role">${role.label}${lvl} · <span class="${seen.days>=3?'away':''}">${seen.txt}</span></div>
       </div>
       <div class="trophies"><span class="tnum">🏆 ${m.trophies.toLocaleString()}</span>
         <span class="tbar"><i style="width:${pct}%"></i></span></div>
@@ -539,6 +647,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/clan":
             self._send(200, json.dumps(fetch_all()), "application/json")
+        elif self.path.startswith("/api/player"):
+            from urllib.parse import urlparse, parse_qs, unquote
+            q = parse_qs(urlparse(self.path).query)
+            tag = unquote((q.get("tag") or [""])[0])
+            if not tag.startswith("#"):
+                self._send(400, '{"error":"bad tag"}', "application/json")
+                return
+            self._send(200, json.dumps(fetch_player(tag)), "application/json")
         elif self.path == "/download.xlsx":
             clan = fetch_all()
             if clan.get("error"):
