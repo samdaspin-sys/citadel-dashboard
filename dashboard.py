@@ -154,6 +154,35 @@ def fetch_player(tag):
     return p
 
 
+def fetch_opponents(clan):
+    """For each rival clan in the current war: their history (last 8 wars).
+    Their live rosters (decks/fame) are already in standings parts."""
+    war = clan.get("_war") or {}
+    opps = []
+    headers = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json"}
+    for s in war.get("standings", []):
+        if s.get("tag") == clan.get("tag"):
+            continue
+        opp = dict(s)
+        try:
+            wl = _get(f"/clans/{quote(s['tag'])}/riverracelog?limit=8", headers)
+            if wl.status_code == 200:
+                hist = []
+                for item in wl.json().get("items", []):
+                    date = (item.get("createdDate") or "")[:8]
+                    for st in item.get("standings", []):
+                        cc = st.get("clan", {})
+                        if cc.get("tag") == s.get("tag"):
+                            hist.append({"date": date, "rank": st.get("rank"),
+                                         "trophyChange": st.get("trophyChange"),
+                                         "fame": cc.get("fame")})
+                opp["history"] = hist
+        except requests.RequestException:
+            opp["history"] = []
+        opps.append(opp)
+    return opps
+
+
 def _seen_dt(s):
     if not s:
         return None
@@ -309,7 +338,39 @@ def build_workbook(clan):
             _row(wm, ri, row,
                  red=(len(row),) if missed > 0 else ())
 
-    # 6) Donations leaderboard
+    # 6) Enemy intel (war weeks only)
+    opps = clan.get("_opponents") or []
+    if opps:
+        er = wb.create_sheet("Enemy Rosters")
+        _head(er, ["Clan", "Player", "War decks", "Decks today", "Fame"],
+              [20, 20, 11, 12, 10])
+        ri = 2
+        for o in opps:
+            for p in sorted(o.get("parts", []),
+                            key=lambda p: -(p.get("fame") or 0)):
+                d = p.get("decks", 0)
+                _row(er, ri, [o.get("name", ""), p.get("name", ""),
+                              d, p.get("today", 0), p.get("fame", 0)],
+                     red=(3,) if d == 0 else (), num=(5,))
+                ri += 1
+
+        eh = wb.create_sheet("Enemy History")
+        _head(eh, ["Clan", "Week", "Rank", "Fame", "Trophy change",
+                   "Wins (of 8)"],
+              [20, 11, 7, 11, 13, 11])
+        ri = 2
+        for o in opps:
+            hist = o.get("history", [])
+            wins = sum(1 for h in hist if h.get("rank") == 1)
+            for h in hist:
+                d = h["date"]; tc = h.get("trophyChange") or 0
+                _row(eh, ri, [o.get("name", ""),
+                              f"{d[4:6]}/{d[6:8]}/{d[0:4]}",
+                              h.get("rank"), h.get("fame"), tc, wins],
+                     red=(5,) if tc < 0 else (), num=(4,))
+                ri += 1
+
+    # 7) Donations leaderboard
     dl = wb.create_sheet("Donations")
     _head(dl, ["#", "Name", "Given", "Received", "Net"],
           [5, 20, 10, 11, 9])
@@ -344,9 +405,6 @@ body{font-family:'Zen Kaku Gothic New',system-ui,sans-serif;background:var(--pap
   color:var(--sumi);min-height:100vh;padding:34px 20px 90px;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1100px;margin:0 auto}
 .hero{position:relative;text-align:center;padding:26px 0 30px;overflow:hidden}
-.sun{position:absolute;top:-40px;left:50%;transform:translateX(-50%);
-  width:320px;height:320px;border-radius:50%;
-  background:radial-gradient(circle,var(--red) 0%,var(--red) 62%,transparent 63%);opacity:.92;z-index:0}
 .hero>*{position:relative;z-index:1}
 .logo{width:150px;height:150px;border-radius:50%;object-fit:cover;
   border:3px solid var(--sumi);box-shadow:0 8px 30px rgba(54,59,65,.25);
@@ -438,7 +496,6 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 }
 </style></head><body><div class="wrap">
 <div class="hero">
-  <div class="sun"></div>
   <img class="logo" src="/logo.png" alt="" onerror="this.style.display='none'">
   <h1>THE CITADEL</h1>
   <div class="tag" id="ctag"></div>
@@ -770,6 +827,8 @@ class Handler(BaseHTTPRequestHandler):
             if clan.get("error"):
                 self._send(502, "Could not reach the API.", "text/plain")
                 return
+            clan = dict(clan)
+            clan["_opponents"] = fetch_opponents(clan)
             data = build_workbook(clan)
             stamp = datetime.now().strftime("%Y-%m-%d")
             self._send(200, data,
