@@ -196,12 +196,86 @@ def fetch_opponents(clan):
                         if cc.get("tag") == s.get("tag"):
                             hist.append({"date": date, "rank": st.get("rank"),
                                          "trophyChange": st.get("trophyChange"),
-                                         "fame": cc.get("fame")})
+                                         "fame": cc.get("fame"),
+                                         "decks": sum(pp.get("decksUsed", 0)
+                                                      for pp in (cc.get("participants") or []))})
                 opp["history"] = hist
         except requests.RequestException:
             opp["history"] = []
         opps.append(opp)
     return opps
+
+
+def _project(hist, fame_now, decks_now):
+    """Weighted projection from war history (newest first) + current pace.
+    Transparent heuristic: recent wars weigh more; projected final fame =
+    fame so far + (expected remaining decks x historical fame-per-deck)."""
+    fam = [h.get("fame") or 0 for h in hist]
+    dks = [h.get("decks") or 0 for h in hist]
+    wts = list(range(len(hist), 0, -1))
+    wavg_f = (sum(f * w for f, w in zip(fam, wts)) / sum(wts)) if hist else None
+    per_deck = [f / d for f, d in zip(fam, dks) if d]
+    fpd = sum(per_deck) / len(per_deck) if per_deck else None
+    used = [d for d in dks if d]
+    avg_d = sum(used) / len(used) if used else None
+    if fpd and avg_d:
+        remaining = max(avg_d - decks_now, 0)
+        proj = fame_now + remaining * fpd
+    elif wavg_f is not None:
+        proj = max(fame_now, wavg_f)
+    else:
+        proj = fame_now
+    return {"histAvg": wavg_f, "famePerDeck": fpd, "avgDecks": avg_d,
+            "projected": round(proj)}
+
+
+def compute_forecast(clan, opps):
+    """Project final fame for every clan in the race + our expected lineup."""
+    wl = clan.get("_warlog") or {}
+    mh = wl.get("members", {})
+    decks_by_week = {}
+    for wk in mh.values():
+        for d, v in wk.items():
+            decks_by_week[d] = decks_by_week.get(d, 0) + (v.get("decks") or 0)
+    ours_hist = [{"fame": e.get("fame") or 0,
+                  "decks": decks_by_week.get(e["date"], 0)}
+                 for e in wl.get("clan", [])]
+    war = clan.get("_war") or {}
+    our_f = war.get("fame") or 0
+    our_d = sum(p.get("decksUsed", 0) for p in war.get("participants", []))
+    clans = [dict(name=clan.get("name"), tag=clan.get("tag"), us=True,
+                  fameNow=our_f, decksNow=our_d,
+                  **_project(ours_hist, our_f, our_d))]
+    for o in opps:
+        hist = [{"fame": h.get("fame") or 0, "decks": h.get("decks") or 0}
+                for h in o.get("history", [])]
+        f_now = o.get("fame") or 0
+        d_now = sum(p.get("decks", 0) for p in o.get("parts", []))
+        clans.append(dict(name=o.get("name"), tag=o.get("tag"), us=False,
+                          fameNow=f_now, decksNow=d_now,
+                          **_project(hist, f_now, d_now)))
+    tot = sum(c["projected"] for c in clans) or 1
+    for c in clans:
+        c["share"] = round(c["projected"] / tot * 100)
+    clans.sort(key=lambda c: -c["projected"])
+
+    # our projected lineup: expected decks x personal fame-per-deck
+    lineup, weeks = [], wl.get("weeks", [])
+    for m in clan.get("memberList", []):
+        wk = mh.get(m.get("tag"), {})
+        ds = [wk[w]["decks"] for w in weeks if w in wk]
+        fs = [wk[w].get("fame", 0) for w in weeks if w in wk]
+        if not ds:
+            continue
+        wts = list(range(len(ds), 0, -1))
+        exp_d = sum(d * w for d, w in zip(ds, wts)) / sum(wts)
+        pd = [f / d for f, d in zip(fs, ds) if d]
+        fpd = sum(pd) / len(pd) if pd else 0
+        lineup.append({"name": m.get("name"), "expDecks": round(exp_d, 1),
+                       "fpd": round(fpd), "expFame": round(exp_d * fpd),
+                       "part": round(sum(1 for d in ds if d) / len(ds) * 100)})
+    lineup.sort(key=lambda x: -x["expFame"])
+    return {"clans": clans, "lineup": lineup}
 
 
 def _seen_dt(s):
@@ -340,11 +414,11 @@ def build_workbook(clan):
     if weeks:
         wm = wb.create_sheet("War Matrix")
         heads = ["Rank", "Name"] + [f"{w[4:6]}/{w[6:8]}" for w in weeks] + \
-                ["Total decks", "Missed wars"]
-        _head(wm, heads, [7, 20] + [8] * len(weeks) + [12, 12])
+                ["Total decks", "Missed wars", "Avg fame/war", "Fame/deck"]
+        _head(wm, heads, [7, 20] + [8] * len(weeks) + [12, 12, 13, 10])
         for ri, m in enumerate(mem, start=2):
             row = [m.get("clanRank"), m.get("name", "")]
-            tot, missed = 0, 0
+            tot, missed, fames = 0, 0, []
             for w in weeks:
                 rec = mh.get(m.get("tag"), {}).get(w)
                 if rec is None:
@@ -353,11 +427,14 @@ def build_workbook(clan):
                     d = rec["decks"]
                     row.append(d)
                     tot += d
+                    fames.append(rec.get("fame", 0))
                     if d == 0:
                         missed += 1
-            row += [tot, missed]
+            avg_f = round(sum(fames) / len(fames)) if fames else 0
+            fpd = round(sum(fames) / tot) if tot else 0
+            row += [tot, missed, avg_f, fpd]
             _row(wm, ri, row,
-                 red=(len(row),) if missed > 0 else ())
+                 red=(len(row) - 2,) if missed > 0 else (), num=(len(row) - 1,))
 
     # 6) Enemy intel (war weeks only)
     opps = clan.get("_opponents") or []
@@ -390,6 +467,22 @@ def build_workbook(clan):
                               h.get("rank"), h.get("fame"), tc, wins],
                      red=(5,) if tc < 0 else (), num=(4,))
                 ri += 1
+
+    # 6b) Forecast (transparent heuristic model)
+    fc = clan.get("_forecast")
+    if fc and fc.get("clans"):
+        fs = wb.create_sheet("Forecast")
+        _head(fs, ["Clan", "Hist avg fame", "Fame/deck", "Fame now",
+                   "Decks now", "Projected final", "Share %"],
+              [20, 13, 11, 11, 11, 14, 9])
+        for ri, c in enumerate(fc["clans"], start=2):
+            _row(fs, ri,
+                 [c["name"],
+                  round(c["histAvg"]) if c.get("histAvg") else "—",
+                  round(c["famePerDeck"]) if c.get("famePerDeck") else "—",
+                  c.get("fameNow", 0), c.get("decksNow", 0),
+                  c["projected"], f'{c["share"]}%'],
+                 red=(1,) if c.get("us") else (), num=(2, 4, 6))
 
     # 7) Donations leaderboard
     dl = wb.create_sheet("Donations")
@@ -633,6 +726,16 @@ async function openPlayer(tag,name){
         p.currentDeck.map(c=>c.name).join(' · ')+'</div>';
     }
     if(p._warHistory&&p._warHistory.length){
+      const H=p._warHistory, n=H.length;
+      const td=H.reduce((s,h)=>s+(h.decks||0),0), tf=H.reduce((s,h)=>s+(h.fame||0),0);
+      const played=H.filter(h=>h.decks>0).length;
+      html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">War efficiency — recruiting metrics</div>';
+      html+='<div class="pgrid">'+[
+        ['Avg fame/war',Math.round(tf/n).toLocaleString()],
+        ['Fame per deck',td?Math.round(tf/td):'—'],
+        ['Avg decks/war',(td/n).toFixed(1)],
+        ['Participation',Math.round(played/n*100)+'%'],
+      ].map(s=>`<div class="pstat"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('')+'</div>';
       const cn=(p.clan&&p.clan.name)?' (with '+p.clan.name+')':'';
       html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Past war weeks'+cn+'</div>';
       html+='<table class="bl" style="margin-bottom:16px"><tr style="font-weight:700"><td>Week</td><td>Decks used</td><td>Fame</td></tr>';
@@ -721,6 +824,34 @@ async function openScout(tag,name){
   }
 }
 
+async function runForecast(){
+  const fc=document.getElementById('fc');
+  fc.innerHTML='<div class="loading">Consulting the oracle… gathering enemy histories</div>';
+  try{
+    const r=await fetch('/api/forecast'); const d=await r.json();
+    if(d.error){fc.innerHTML='<div class="loading">Forecast failed ('+d.error+').</div>';return;}
+    let h='<table class="wartbl"><tr><th>Clan</th><th>Hist avg</th><th>Fame now</th><th>Projected</th><th>Share</th></tr>';
+    (d.clans||[]).forEach(c=>{
+      h+=`<tr class="${c.us?'us':''}"><td>${c.name}</td>
+        <td>${c.histAvg?Math.round(c.histAvg).toLocaleString():'—'}</td>
+        <td>${(c.fameNow||0).toLocaleString()}</td>
+        <td><b>${c.projected.toLocaleString()}</b></td><td>${c.share}%</td></tr>`;
+    });
+    h+='</table>';
+    if(d.lineup&&d.lineup.length){
+      h+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin:14px 10px 6px;text-align:left">Our projected contributors — exp decks × fame/deck · red = under 50% participation</div>';
+      h+='<table class="bl" style="margin:0 10px 12px;width:calc(100% - 20px)">';
+      d.lineup.slice(0,15).forEach((m,i)=>{
+        h+=`<tr><td>${i+1}</td><td>${m.name}</td><td>${m.expDecks} decks</td>
+          <td>${m.fpd}/deck</td><td><b>${m.expFame.toLocaleString()}</b></td>
+          <td class="${m.part<50?'l2':'w'}">${m.part}%</td></tr>`;
+      });
+      h+='</table>';
+    }
+    fc.style.padding='0'; fc.style.textAlign='left'; fc.innerHTML=h;
+  }catch(e){fc.innerHTML='<div class="loading">Connection error.</div>';}
+}
+
 document.addEventListener('click',e=>{
   const pc=e.target.closest('tr.pickclan');
   if(pc){openScout(pc.dataset.tag,pc.dataset.name);return;}
@@ -807,6 +938,13 @@ function render(c){
     });
     html+='</table></div>';
   }
+
+  // war forecast (always available; strongest mid-war)
+  html+=`<div class="bh"><h2>War Forecast</h2>
+    <span class="sub">WEIGHTED LAST-${weeks.length||8}-WAR MODEL · ESTIMATE, NOT PROPHECY</span></div>
+  <div class="panel" id="fc" style="padding:18px;text-align:center">
+    <button class="dl" onclick="runForecast()" style="border:none;cursor:pointer">⚡ Run Forecast</button>
+  </div>`;
 
   // roster
   html+=`<div class="bh"><h2>The Roster</h2>
@@ -940,6 +1078,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, '{"error":"bad tag"}', "application/json")
                 return
             self._send(200, json.dumps(fetch_player(tag)), "application/json")
+        elif self.path == "/api/forecast":
+            clan = fetch_all()
+            if clan.get("error"):
+                self._send(200, json.dumps({"error": clan["error"]}),
+                           "application/json")
+                return
+            self._send(200, json.dumps(
+                compute_forecast(clan, fetch_opponents(clan))),
+                "application/json")
         elif self.path == "/download.xlsx":
             clan = fetch_all()
             if clan.get("error"):
@@ -947,6 +1094,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             clan = dict(clan)
             clan["_opponents"] = fetch_opponents(clan)
+            clan["_forecast"] = compute_forecast(clan, clan["_opponents"])
             data = build_workbook(clan)
             stamp = datetime.now().strftime("%Y-%m-%d")
             self._send(200, data,
