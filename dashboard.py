@@ -151,6 +151,27 @@ def fetch_player(tag):
             p["_battles"] = battles
     except requests.RequestException:
         pass
+    # war-week history: cross-reference their clan's river race log
+    try:
+        ctag = (p.get("clan") or {}).get("tag")
+        if ctag:
+            wl = _get(f"/clans/{quote(ctag)}/riverracelog?limit=8", headers)
+            if wl.status_code == 200:
+                hist = []
+                for item in wl.json().get("items", []):
+                    date = (item.get("createdDate") or "")[:8]
+                    for st in item.get("standings", []):
+                        cc = st.get("clan", {})
+                        if cc.get("tag") != ctag:
+                            continue
+                        for part in cc.get("participants") or []:
+                            if part.get("tag") == p.get("tag"):
+                                hist.append({"date": date,
+                                             "decks": part.get("decksUsed", 0),
+                                             "fame": part.get("fame", 0)})
+                p["_warHistory"] = hist
+    except requests.RequestException:
+        pass
     return p
 
 
@@ -423,6 +444,15 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
   color:#fff;font-family:'Space Mono';font-weight:700;font-size:12px;letter-spacing:.08em;
   text-transform:uppercase;padding:11px 18px;transition:background .15s}
 .dl:hover{background:var(--red2)}
+.search{display:flex;gap:8px;max-width:560px;margin:22px auto 0}
+.search input{flex:1;min-width:0;padding:11px 14px;border:2px solid var(--sumi);
+  background:var(--panel);font-family:'Space Mono';font-size:13px;color:var(--sumi);outline:none}
+.search input::placeholder{color:var(--ash)}
+.sbtn{background:var(--sumi);color:#fff;border:none;cursor:pointer;
+  font-family:'Space Mono';font-weight:700;font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase;padding:0 16px}
+.sbtn.alt{background:var(--red)}
+.sbtn:hover{opacity:.9}
 .rule{height:2px;background:var(--sumi);margin:8px 0 0;opacity:.85}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));
   gap:1px;background:var(--line);border:1px solid var(--line);margin:32px 0}
@@ -504,6 +534,12 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
     <span class="pulse"><span class="dot"></span><span id="updated">connecting…</span></span>
     <a class="dl" href="/download.xlsx">⤓ Full Excel Report</a>
   </div>
+  <div class="search">
+    <input id="q" placeholder="Player #TAG · clan name or #TAG"
+      onkeydown="if(event.key==='Enter')doSearchEnter()">
+    <button class="sbtn" onclick="doSearch('player')">Player</button>
+    <button class="sbtn alt" onclick="doSearch('clan')">Clan</button>
+  </div>
 </div>
 <div class="rule"></div>
 <div id="body"></div>
@@ -519,6 +555,54 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 <script>
 function closeCard(){document.getElementById('ov').classList.remove('open');}
 
+function doSearchEnter(){
+  const v=document.getElementById('q').value.trim();
+  if(!v) return;
+  // Enter: a #tag alone is ambiguous, so default tags to player; words to clan
+  doSearch(v.startsWith('#')?'player':'clan');
+}
+function doSearch(mode){
+  let v=document.getElementById('q').value.trim();
+  if(!v) return;
+  if(mode==='player'){
+    if(!v.startsWith('#')) v='#'+v;
+    openPlayer(encodeURIComponent(v.toUpperCase()), v.toUpperCase());
+  }else{
+    if(v.startsWith('#')){
+      openScout(encodeURIComponent(v.toUpperCase()), v.toUpperCase());
+    }else{
+      searchClans(v);
+    }
+  }
+}
+async function searchClans(name){
+  const ov=document.getElementById('ov');
+  document.getElementById('pname').textContent='Clan search: '+name;
+  document.getElementById('pbody').innerHTML='<div class="loading">Searching the realms…</div>';
+  ov.classList.add('open');
+  try{
+    const r=await fetch('/api/searchclans?name='+encodeURIComponent(name));
+    const d=await r.json();
+    if(d.error){document.getElementById('pbody').innerHTML=
+      '<div class="loading">'+d.error+'</div>';return;}
+    const items=d.items||[];
+    if(!items.length){document.getElementById('pbody').innerHTML=
+      '<div class="loading">No clans found by that name.</div>';return;}
+    let html='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Tap a clan for its full scout report</div>';
+    html+='<table class="bl"><tr style="font-weight:700"><td>Clan</td><td>Score</td><td>Members</td><td>Region</td></tr>';
+    items.forEach(c=>{
+      html+=`<tr class="pickclan" data-tag="${encodeURIComponent(c.tag)}" data-name="${(c.name||'').replace(/"/g,'&quot;')}" style="cursor:pointer">
+        <td>${c.name}<br><span style="color:var(--ash);font-size:10px">${c.tag}</span></td>
+        <td>${(c.score||0).toLocaleString()}</td>
+        <td>${c.members??'—'}/50</td><td>${c.loc||''}</td></tr>`;
+    });
+    html+='</table>';
+    document.getElementById('pbody').innerHTML=html;
+  }catch(e){
+    document.getElementById('pbody').innerHTML='<div class="loading">Connection error.</div>';
+  }
+}
+
 async function openPlayer(tag,name){
   const ov=document.getElementById('ov');
   document.getElementById('pname').textContent=name;
@@ -528,7 +612,8 @@ async function openPlayer(tag,name){
     const r=await fetch('/api/player?tag='+tag);
     const p=await r.json();
     if(p.error){document.getElementById('pbody').innerHTML=
-      '<div class="loading">Could not load ('+p.error+').</div>';return;}
+      '<div class="loading">Could not load ('+p.error+'). Check the tag.</div>';return;}
+    document.getElementById('pname').textContent=p.name||name;
     const wins=p.wins||0, losses=p.losses||0;
     const wr=wins+losses?Math.round(wins/(wins+losses)*100):0;
     const stats=[
@@ -546,6 +631,17 @@ async function openPlayer(tag,name){
       html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Current deck</div>';
       html+='<div style="font-size:13px;line-height:1.7;margin-bottom:16px">'+
         p.currentDeck.map(c=>c.name).join(' · ')+'</div>';
+    }
+    if(p._warHistory&&p._warHistory.length){
+      const cn=(p.clan&&p.clan.name)?' (with '+p.clan.name+')':'';
+      html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Past war weeks'+cn+'</div>';
+      html+='<table class="bl" style="margin-bottom:16px"><tr style="font-weight:700"><td>Week</td><td>Decks used</td><td>Fame</td></tr>';
+      for(const h of p._warHistory){
+        html+=`<tr><td>${h.date.slice(4,6)}/${h.date.slice(6,8)}</td>
+          <td class="${h.decks===0?'l2':''}">${h.decks}</td>
+          <td>${(h.fame||0).toLocaleString()}</td></tr>`;
+      }
+      html+='</table>';
     }
     if(p._battles&&p._battles.length){
       html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Recent battles</div>';
@@ -626,6 +722,8 @@ async function openScout(tag,name){
 }
 
 document.addEventListener('click',e=>{
+  const pc=e.target.closest('tr.pickclan');
+  if(pc){openScout(pc.dataset.tag,pc.dataset.name);return;}
   const sc=e.target.closest('tr.scout');
   if(sc){openScout(sc.dataset.tag,sc.dataset.name);return;}
   const row=e.target.closest('.row.click');
@@ -782,6 +880,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/clan":
             self._send(200, json.dumps(fetch_all()), "application/json")
+        elif self.path.startswith("/api/searchclans"):
+            from urllib.parse import urlparse, parse_qs, unquote
+            q = parse_qs(urlparse(self.path).query)
+            name = unquote((q.get("name") or [""])[0]).strip()
+            if len(name) < 3:
+                self._send(200, '{"error":"Clan name must be at least 3 characters."}',
+                           "application/json")
+                return
+            headers = {"Authorization": f"Bearer {TOKEN}",
+                       "Accept": "application/json"}
+            r = _get(f"/clans?name={quote(name)}&limit=10", headers)
+            if r.status_code != 200:
+                self._send(200, json.dumps({"error": r.status_code}),
+                           "application/json")
+                return
+            items = [{"name": c.get("name"), "tag": c.get("tag"),
+                      "score": c.get("clanScore"), "members": c.get("members"),
+                      "loc": (c.get("location") or {}).get("name", "")}
+                     for c in r.json().get("items", [])]
+            self._send(200, json.dumps({"items": items}), "application/json")
         elif self.path.startswith("/api/scout"):
             from urllib.parse import urlparse, parse_qs, unquote
             q = parse_qs(urlparse(self.path).query)
