@@ -348,6 +348,9 @@ body{font-family:'Zen Kaku Gothic New',system-ui,sans-serif;background:var(--pap
   width:320px;height:320px;border-radius:50%;
   background:radial-gradient(circle,var(--red) 0%,var(--red) 62%,transparent 63%);opacity:.92;z-index:0}
 .hero>*{position:relative;z-index:1}
+.logo{width:150px;height:150px;border-radius:50%;object-fit:cover;
+  border:3px solid var(--sumi);box-shadow:0 8px 30px rgba(54,59,65,.25);
+  margin-bottom:14px;background:var(--paper)}
 h1{font-family:'Stardos Stencil',serif;font-weight:700;
   font-size:clamp(40px,9vw,88px);letter-spacing:.02em;line-height:.92;
   text-shadow:0 2px 0 rgba(255,255,255,.35)}
@@ -436,6 +439,7 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 </style></head><body><div class="wrap">
 <div class="hero">
   <div class="sun"></div>
+  <img class="logo" src="/logo.png" alt="" onerror="this.style.display='none'">
   <h1>THE CITADEL</h1>
   <div class="tag" id="ctag"></div>
   <p class="desc" id="cdesc"></p>
@@ -542,6 +546,22 @@ async function openScout(tag,name){
         <td>${p.fame!==undefined?p.fame.toLocaleString():'—'}</td></tr>`;
     });
     html+='</table>';
+
+    // their war history
+    const hist=cl._history||[];
+    if(hist.length){
+      const wins=hist.filter(h=>h.rank===1).length;
+      html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin:16px 0 6px">Their last '+hist.length+' wars — '+wins+' victories</div>';
+      html+='<table class="bl"><tr style="font-weight:700"><td>Week</td><td>Result</td><td>Fame</td><td>Trophies</td></tr>';
+      for(const h of hist){
+        const tc=h.trophyChange||0;
+        html+=`<tr><td>${h.date.slice(4,6)}/${h.date.slice(6,8)}</td>
+          <td class="${h.rank===1?'w':''}">${h.rank===1?'Victory':'#'+h.rank}</td>
+          <td>${(h.fame||0).toLocaleString()}</td>
+          <td class="${tc<0?'l2':'w'}">${tc>0?'+':''}${tc}</td></tr>`;
+      }
+      html+='</table>';
+    }
     document.getElementById('pbody').innerHTML=html;
   }catch(e){
     document.getElementById('pbody').innerHTML='<div class="loading">Connection error.</div>';
@@ -716,6 +736,26 @@ class Handler(BaseHTTPRequestHandler):
                        "Accept": "application/json"}
             r = _get(f"/clans/{quote(tag)}", headers)
             body = r.json() if r.status_code == 200 else {"error": r.status_code}
+            # their war history too
+            if "error" not in body:
+                try:
+                    wl = _get(f"/clans/{quote(tag)}/riverracelog?limit=8", headers)
+                    if wl.status_code == 200:
+                        hist = []
+                        for item in wl.json().get("items", []):
+                            date = (item.get("createdDate") or "")[:8]
+                            for st in item.get("standings", []):
+                                cc = st.get("clan", {})
+                                if cc.get("tag") == body.get("tag"):
+                                    hist.append({
+                                        "date": date,
+                                        "rank": st.get("rank"),
+                                        "trophyChange": st.get("trophyChange"),
+                                        "fame": cc.get("fame"),
+                                    })
+                        body["_history"] = hist
+                except requests.RequestException:
+                    pass
             self._send(200, json.dumps(body), "application/json")
         elif self.path.startswith("/api/player"):
             from urllib.parse import urlparse, parse_qs, unquote
@@ -736,6 +776,14 @@ class Handler(BaseHTTPRequestHandler):
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        {"Content-Disposition":
                         f'attachment; filename="the-citadel-{stamp}.xlsx"'})
+        elif self.path == "/logo.png":
+            try:
+                with open(os.path.join(os.path.dirname(
+                        os.path.abspath(__file__)), "logo.png"), "rb") as f:
+                    self._send(200, f.read(), "image/png",
+                               {"Cache-Control": "public, max-age=86400"})
+            except OSError:
+                self._send(404, "no logo", "text/plain")
         elif self.path == "/":
             self._send(200, PAGE, "text/html; charset=utf-8")
         else:
