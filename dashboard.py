@@ -168,7 +168,8 @@ def fetch_player(tag):
                             if part.get("tag") == p.get("tag"):
                                 hist.append({"date": date,
                                              "decks": part.get("decksUsed", 0),
-                                             "fame": part.get("fame", 0)})
+                                             "fame": part.get("fame", 0),
+                                             "clanTrophyChange": st.get("trophyChange")})
                 p["_warHistory"] = hist
     except requests.RequestException:
         pass
@@ -729,12 +730,15 @@ async function openPlayer(tag,name){
       const H=p._warHistory, n=H.length;
       const td=H.reduce((s,h)=>s+(h.decks||0),0), tf=H.reduce((s,h)=>s+(h.fame||0),0);
       const played=H.filter(h=>h.decks>0).length;
+      const tcs=H.filter(h=>h.decks>0&&h.clanTrophyChange!=null).map(h=>h.clanTrophyChange);
+      const avgTc=tcs.length?Math.round(tcs.reduce((a,b)=>a+b,0)/tcs.length):null;
       html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">War efficiency — recruiting metrics</div>';
       html+='<div class="pgrid">'+[
         ['Avg fame/war',Math.round(tf/n).toLocaleString()],
         ['Fame per deck',td?Math.round(tf/td):'—'],
         ['Avg decks/war',(td/n).toFixed(1)],
         ['Participation',Math.round(played/n*100)+'%'],
+        ['Avg war 🏆 swing',avgTc==null?'—':(avgTc>0?'+':'')+avgTc],
       ].map(s=>`<div class="pstat"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('')+'</div>';
       const cn=(p.clan&&p.clan.name)?' (with '+p.clan.name+')':'';
       html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Past war weeks'+cn+'</div>';
@@ -745,6 +749,8 @@ async function openPlayer(tag,name){
           <td>${(h.fame||0).toLocaleString()}</td></tr>`;
       }
       html+='</table>';
+    } else if(p.clan&&p.clan.name){
+      html+='<div style="font-family:\'Space Mono\';font-size:11px;color:var(--ash);padding:10px 0 16px">No tracked war record with '+p.clan.name+' — they joined recently or haven\'t fought in its last 8 wars. (War history from previous clans isn\'t available from the API.)</div>';
     }
     if(p._battles&&p._battles.length){
       html+='<div style="font-family:\'Space Mono\';font-size:10px;letter-spacing:.1em;color:var(--ash);text-transform:uppercase;margin-bottom:6px">Recent battles</div>';
