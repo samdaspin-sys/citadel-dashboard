@@ -503,7 +503,14 @@ def build_workbook(clan):
 # ---- The page -------------------------------------------------------
 PAGE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#efe9db">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="The Citadel">
+<link rel="apple-touch-icon" href="/logo.png">
+<link rel="icon" href="/logo.png">
 <title>The Citadel — Intelligence Board</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -644,10 +651,48 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 .bl td{padding:7px 6px;border-bottom:1px solid var(--line)}
 .bl .w{color:var(--green);font-weight:700}.bl .l2{color:var(--red);font-weight:700}
 .loading{text-align:center;padding:30px;font-family:'Space Mono';font-size:12px;color:var(--ash)}
-@media(max-width:720px){
-  .row{grid-template-columns:30px 1fr 84px;gap:10px}
+/* iOS: 16px inputs prevent auto-zoom; safe-area insets respect the notch */
+body{padding-left:max(20px,env(safe-area-inset-left));
+  padding-right:max(20px,env(safe-area-inset-right));
+  padding-bottom:max(90px,env(safe-area-inset-bottom))}
+.search input{font-size:16px}
+
+@media(max-width:820px){
+  body{padding-top:22px}
+  .logo{width:110px;height:110px}
+  h1{font-size:clamp(34px,12vw,60px)}
+  .bar-top{gap:12px}
+  .search{flex-wrap:wrap}
+  .search input{flex:1 1 100%}
+  .stats{grid-template-columns:repeat(3,1fr)}
+  .ac{grid-template-columns:1fr}
+  .sortbar{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+  .sortbtn{flex:0 0 auto}
+  /* mobile roster: 3 compact stat chips under the name instead of side columns */
+  .row,.row.click{grid-template-columns:30px 1fr;gap:10px;padding:12px 14px}
   .trophies,.cell{display:none}
+  .who{grid-column:2}
+  .mstats{display:flex;gap:12px;margin-top:7px;flex-wrap:wrap}
+  .mstat{font-family:'Space Mono';font-size:11px;color:var(--soft)}
+  .mstat b{color:var(--sumi)}
+  .mstat.bad b{color:var(--red)}
+  .mstat.good b{color:var(--green)}
+  .rank{align-self:start;padding-top:2px}
   .wartbl th:nth-child(n+5),.wartbl td:nth-child(n+5){display:none}
+  .card{max-width:100%}
+  .pgrid{grid-template-columns:repeat(2,1fr)}
+  .card-body{padding:16px}
+}
+@media(min-width:821px){.mstats{display:none}}
+/* iOS/mobile behaviors driven by device detection */
+html.is-ios .overlay{-webkit-overflow-scrolling:touch}
+html.is-ios .card{max-height:none}
+html.is-mobile .foot{font-size:9px;line-height:1.6}
+html.is-mobile .dl{padding:12px 20px}   /* bigger tap target */
+html.is-mobile .search input{font-size:16px}  /* belt-and-suspenders: no iOS zoom */
+@media(max-width:400px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .pgrid{grid-template-columns:repeat(2,1fr)}
 }
 </style></head><body><div class="wrap">
 <div class="hero">
@@ -677,6 +722,18 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
     <div class="card-body" id="pbody"><div class="loading">Summoning record…</div></div>
   </div>
 </div>
+<script>
+// Device detection — tag <html> so CSS + JS can adapt to phones/iOS
+(function(){
+  const ua=navigator.userAgent||'';
+  const isIOS=/iPad|iPhone|iPod/.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  const isMobile=isIOS||/Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua)||window.innerWidth<=720;
+  const cl=document.documentElement.classList;
+  if(isMobile) cl.add('is-mobile');
+  if(isIOS) cl.add('is-ios');
+  window._isMobile=isMobile;
+})();
+</script>
 <script>
 function closeCard(){document.getElementById('ov').classList.remove('open');}
 function copyTag(t){navigator.clipboard&&navigator.clipboard.writeText(t);
@@ -1002,7 +1059,11 @@ function render(c){
     <span class="nm">${m.name}</span><span class="vv ${cls||''}">${val}</span></div>`;}
 
   html+='<div class="ac">';
-  if(inWar){
+  // Decks owed: only during war days (Thu–Sun on the game's UTC clock) AND an active war.
+  // CR war weekend runs Thu 00:00 UTC through Sun end-of-day UTC.
+  const utcDay=new Date().getUTCDay();      // 0=Sun 1=Mon ... 4=Thu 5=Fri 6=Sat
+  const isWarWeekend=(utcDay===4||utcDay===5||utcDay===6||utcDay===0);
+  if(inWar && isWarWeekend){
     html+=`<div class="ac-card ac-red"><div class="ac-top">⚔ Decks owed today<span class="cnt">${owed.reduce((s,x)=>s+x.left,0)}</span></div><div class="ac-body">`;
     html+= owed.length? owed.slice(0,8).map(x=>acItem(x.m,x.left+' left','bad')).join('')
       : '<div class="ac-empty">Everyone has battled today ✓</div>';
@@ -1073,11 +1134,18 @@ function render(c){
     const p=parts[m.tag]||{}; const used=p.decksUsed||0;
     const lvl=(m.expLevel&&m.expLevel>0)?` · lvl ${m.expLevel}`:'';
     const hpCol=rec.hp>=70?'var(--green)':rec.hp>=40?'var(--bronze)':'var(--red)';
+    const mDecks=inWar?`<span class="mstat ${used<4?'bad':'good'}">⚔ <b>${used}</b>/16 now</span>`:'';
     html+=`<div class="row click" data-tag="${encodeURIComponent(m.tag)}" data-name="${m.name.replace(/"/g,'&quot;')}">
       <div class="rank ${m.clanRank<=3?'top':''}">${m.clanRank}</div>
       <div class="who">
         <div class="name"><span class="shield" style="background:${role.c}"></span>${m.name}<span class="hp" title="Health ${rec.hp}/100"><i style="width:${rec.hp}%;background:${hpCol}"></i></span></div>
         <div class="role">${role.label}${lvl} · <span class="${seen.days>=3?'away':''}">${seen.txt}</span></div>
+        <div class="mstats">
+          <span class="mstat">🏆 <b>${m.trophies.toLocaleString()}</b></span>
+          <span class="mstat ${g===0?'bad':''}">🎁 <b>${g}</b>/wk</span>
+          ${mDecks}
+          <span class="mstat ${rec.missed>0?'bad':'good'}">missed <b>${rec.missed}</b></span>
+        </div>
       </div>
       <div class="trophies"><span class="tnum">🏆 ${m.trophies.toLocaleString()}</span>
         <span class="tbar"><i style="width:${pct}%"></i></span></div>
