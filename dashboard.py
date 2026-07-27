@@ -1046,13 +1046,34 @@ function render(c){
   const kick=mem.filter(m=>{const r=R(m.tag);
     return r.seen.days>=4 && (r.g===0 || (r.played>0 && r.missed>0));})
     .sort((a,b)=>R(a.tag).hp-R(b.tag).hp);
-  // promotion candidates: members with strong participation + activity, not already elder+
-  const promo=mem.filter(m=>(m.role==='member')&&R(m.tag).played>=2
-    && (R(m.tag).partRate??0)>=0.8 && R(m.tag).seen.days<3 && R(m.tag).hp>=70)
-    .sort((a,b)=>R(b.tag).hp-R(a.tag).hp);
-  // MVP (fame/deck) + top donor
-  const rated=mem.filter(m=>R(m.tag).tot>0);
-  const mvp=rated.slice().sort((a,b)=>R(b.tag).fpd-R(a.tag).fpd)[0];
+  // PROMOTE (strict): a plain member who used all 16 war attacks in BOTH of the
+  // two most recent war weeks — full participation, two weeks running.
+  const FULL_WAR_DECKS=16;
+  const recentWeeks=[...weeks].sort().reverse();   // newest first, date-safe
+  const fullWeek=(tag,wk)=>{const r=(mh[tag]||{})[wk]; return r!==undefined && r.decks>=FULL_WAR_DECKS;};
+  const promo=mem.filter(m=>{
+    if(m.role!=='member') return false;
+    if(recentWeeks.length<2) return false;
+    return fullWeek(m.tag,recentWeeks[0]) && fullWeek(m.tag,recentWeeks[1]);
+  }).sort((a,b)=>R(b.tag).hp-R(a.tag).hp);
+
+  // MVP (war fighter): highest fame-per-deck in the most recent COMPLETED
+  // war — the Thu–Sun race that just finished. The war log only holds
+  // finished races, so this changes ONLY when a new war completes (i.e. it
+  // refreshes every Monday) and stays fixed during the live war, always
+  // reflecting one full completed week.
+  const lastWar=[...weeks].sort().reverse()[0];   // newest completed war date
+  let mvp=null, mvpFpd=0;
+  if(lastWar){
+    mem.forEach(m=>{
+      const r=(mh[m.tag]||{})[lastWar];
+      if(r && r.decks>0){
+        const fpd=r.fame/r.decks;
+        if(fpd>mvpFpd){mvpFpd=fpd; mvp=m;}
+      }
+    });
+  }
+  // Top donor — this week's donations (the game resets these every Monday).
   const donor=mem.slice().sort((a,b)=>(b.donations||0)-(a.donations||0))[0];
 
   function acItem(m,val,cls){return `<div class="ac-item click" data-tag="${encodeURIComponent(m.tag)}" data-name="${m.name.replace(/"/g,'&quot;')}">
@@ -1074,13 +1095,13 @@ function render(c){
     : '<div class="ac-empty">No dead weight — clan is healthy ✓</div>';
   html+='</div></div>';
   html+=`<div class="ac-card ac-green"><div class="ac-top">🟢 Promote<span class="cnt">${promo.length}</span></div><div class="ac-body">`;
-  html+= promo.length? promo.slice(0,6).map(m=>acItem(m,'HP '+R(m.tag).hp,'good')).join('')
-    : '<div class="ac-empty">No standout members to promote yet</div>';
+  html+= promo.length? promo.slice(0,6).map(m=>acItem(m,'maxed ×2 wks','good')).join('')
+    : '<div class="ac-empty">Nobody maxed war two weeks running</div>';
   html+='</div></div>';
   html+=`<div class="ac-card ac-gold"><div class="ac-top">⭐ Standouts<span class="cnt"></span></div><div class="ac-body">`;
-  if(mvp) html+=acItem(mvp,R(mvp.tag).fpd+' fame/deck','good');
-  if(donor&&(donor.donations||0)>0) html+=acItem(donor,(donor.donations)+' donated','good');
-  if(!mvp&&!(donor&&donor.donations)) html+='<div class="ac-empty">No war data yet</div>';
+  if(mvp) html+=acItem(mvp,Math.round(mvpFpd)+' fame/deck · last war','good');
+  if(donor&&(donor.donations||0)>0) html+=acItem(donor,donor.donations+' donated · this wk','good');
+  if(!mvp&&!(donor&&donor.donations)) html+='<div class="ac-empty">No completed war yet</div>';
   html+='</div></div>';
   html+='</div>';
 
