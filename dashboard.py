@@ -593,6 +593,37 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 .err{background:rgba(217,58,43,.08);border:1px solid var(--red);color:var(--red2);
   padding:20px;text-align:center;font-family:'Space Mono';font-size:13px;margin-top:30px;line-height:1.6}
 .row.click{cursor:pointer}
+/* ---- Action Center ---- */
+.ac{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:8px 0 4px}
+.ac-card{border:1px solid var(--line);background:var(--panel);padding:0;overflow:hidden}
+.ac-top{padding:11px 14px;font-family:'Space Mono';font-size:11px;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;color:#fff;display:flex;justify-content:space-between;align-items:center}
+.ac-top .cnt{background:rgba(255,255,255,.25);padding:1px 8px;font-size:11px}
+.ac-red .ac-top{background:var(--red)}
+.ac-green .ac-top{background:var(--green)}
+.ac-blue .ac-top{background:var(--sumi)}
+.ac-gold .ac-top{background:var(--bronze)}
+.ac-body{padding:6px 4px}
+.ac-item{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:7px 11px;font-size:13px;cursor:pointer;border-radius:2px}
+.ac-item:hover{background:var(--band)}
+.ac-item .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ac-item .vv{font-family:'Space Mono';font-size:11px;color:var(--soft);flex:0 0 auto}
+.ac-item .vv.bad{color:var(--red);font-weight:700}
+.ac-item .vv.good{color:var(--green);font-weight:700}
+.ac-empty{padding:12px;font-family:'Space Mono';font-size:11px;color:var(--ash);text-align:center}
+/* ---- Sort bar ---- */
+.sortbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.sortbtn{font-family:'Space Mono';font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  padding:6px 11px;border:1px solid var(--line);background:var(--panel);color:var(--soft);cursor:pointer}
+.sortbtn:hover{border-color:var(--sumi)}
+.sortbtn.on{background:var(--sumi);color:#fff;border-color:var(--sumi)}
+/* ---- Copy tag ---- */
+.copytag{font-family:'Space Mono';font-size:10px;letter-spacing:.06em;background:none;
+  border:1px solid rgba(255,255,255,.4);color:#fff;padding:3px 8px;cursor:pointer;margin-left:10px}
+.copytag:hover{background:rgba(255,255,255,.15)}
+.hp{display:inline-block;width:34px;height:5px;background:rgba(54,59,65,.15);vertical-align:middle;margin-left:8px;position:relative;overflow:hidden}
+.hp i{position:absolute;left:0;top:0;height:100%}
 .overlay{position:fixed;inset:0;background:rgba(54,59,65,.55);display:none;
   align-items:flex-start;justify-content:center;padding:40px 16px;z-index:50;overflow-y:auto}
 .overlay.open{display:flex}
@@ -637,7 +668,7 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 </div>
 <div class="rule"></div>
 <div id="body"></div>
-<div class="foot">THE CITADEL · INTELLIGENCE BOARD · REFRESHES EVERY 60s · CLICK A MEMBER FOR THEIR RECORD</div>
+<div class="foot">THE CITADEL · INTELLIGENCE BOARD · AUTO-REFRESH 60s · CLICK ANYONE FOR THEIR RECORD · PRESS "/" TO SEARCH</div>
 </div>
 <div class="overlay" id="ov" onclick="if(event.target===this)closeCard()">
   <div class="card">
@@ -648,6 +679,9 @@ h1{font-family:'Stardos Stencil',serif;font-weight:700;
 </div>
 <script>
 function closeCard(){document.getElementById('ov').classList.remove('open');}
+function copyTag(t){navigator.clipboard&&navigator.clipboard.writeText(t);
+  event.stopPropagation();
+  const b=event.target;const o=b.textContent;b.textContent='✓ copied';setTimeout(()=>b.textContent=o,1200);}
 
 function doSearchEnter(){
   const v=document.getElementById('q').value.trim();
@@ -707,7 +741,8 @@ async function openPlayer(tag,name){
     const p=await r.json();
     if(p.error){document.getElementById('pbody').innerHTML=
       '<div class="loading">Could not load ('+p.error+'). Check the tag.</div>';return;}
-    document.getElementById('pname').textContent=p.name||name;
+    document.getElementById('pname').innerHTML=(p.name||name)+
+      (p.tag?`<button class="copytag" onclick="copyTag('${p.tag}')">⧉ ${p.tag}</button>`:'');
     const wins=p.wins||0, losses=p.losses||0;
     const wr=wins+losses?Math.round(wins/(wins+losses)*100):0;
     const stats=[
@@ -778,6 +813,8 @@ async function openScout(tag,name){
     const cl=await r.json();
     if(cl.error){document.getElementById('pbody').innerHTML=
       '<div class="loading">Could not scout ('+cl.error+').</div>';return;}
+    if(cl.tag) document.getElementById('pname').innerHTML='⚔ '+(cl.name||name)+
+      `<button class="copytag" onclick="copyTag('${cl.tag}')">⧉ ${cl.tag}</button>`;
     const mem=cl.memberList||[];
     const avg=Math.round(mem.reduce((s,m)=>s+(m.trophies||0),0)/(mem.length||1));
     const weekly=mem.reduce((s,m)=>s+(m.donations||0),0);
@@ -888,6 +925,7 @@ function render(c){
       '<div class="err">API returned '+c.error+'. If 403: make sure the key whitelists 45.79.218.79.</div>';
     return;
   }
+  window._lastClan=c;
   document.getElementById('ctag').textContent=c.tag;
   document.getElementById('cdesc').textContent=c.description||'';
 
@@ -903,18 +941,29 @@ function render(c){
 
   const wl=c._warlog||{}; const weeks=wl.weeks||[]; const mh=wl.members||{};
 
-  // per-member war record across past weeks
+  // per-member war record + composite health score
   const record={};
   for(const m of mem){
-    let tot=0,missed=0,played=0;
+    let tot=0,missed=0,played=0,fame=0;
     for(const w of weeks){
       const r=(mh[m.tag]||{})[w];
-      if(r!==undefined){played++;tot+=r.decks;if(r.decks===0)missed++;}
+      if(r!==undefined){played++;tot+=r.decks;fame+=r.fame||0;if(r.decks===0)missed++;}
     }
-    record[m.tag]={tot,missed,played};
+    const partRate=played?(played-missed)/played:null;   // war participation
+    const fpd=tot?fame/tot:0;                              // fame per deck
+    const g=m.donations||0;
+    const seen=ago(m.lastSeen);
+    // health 0-100: donations(30) + participation(40) + activity(30)
+    let hp=0;
+    hp+=Math.min(g/200,1)*30;
+    hp+=(partRate==null?0.5:partRate)*40;
+    hp+=Math.max(0,1-seen.days/7)*30;
+    record[m.tag]={tot,missed,played,fame,partRate,fpd,hp:Math.round(hp),seen,g};
   }
+  window._record=record;
 
   // stat band
+  const activeToday=inWar?mem.filter(m=>(parts[m.tag]||{}).decksUsedToday>0).length:0;
   const stats=[
     ['Clan score',(c.clanScore||0).toLocaleString(),1],
     ['War trophies',(c.clanWarTrophies!=null?c.clanWarTrophies:'—'),0],
@@ -926,9 +975,53 @@ function render(c){
   if(inWar){
     stats.push(['War state',war.state||'—',1]);
     if(war.fame!=null) stats.push(['War fame',war.fame.toLocaleString(),1]);
+    stats.push(['Battled today',activeToday+'/'+mem.length,1]);
   }
   let html='<div class="stats">'+stats.map(s=>
     `<div class="stat ${s[2]?'accent':''}"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('')+'</div>';
+
+  // ---- ACTION CENTER ----
+  const R=t=>record[t]||{};
+  // decks owed today (war)
+  const owed=inWar?mem.map(m=>({m,left:4-((parts[m.tag]||{}).decksUsedToday||0)}))
+    .filter(x=>x.left>0).sort((a,b)=>b.left-a.left):[];
+  // kick candidates: away 4+ days AND (no donations OR missed a war they were present for)
+  const kick=mem.filter(m=>{const r=R(m.tag);
+    return r.seen.days>=4 && (r.g===0 || (r.played>0 && r.missed>0));})
+    .sort((a,b)=>R(a.tag).hp-R(b.tag).hp);
+  // promotion candidates: members with strong participation + activity, not already elder+
+  const promo=mem.filter(m=>(m.role==='member')&&R(m.tag).played>=2
+    && (R(m.tag).partRate??0)>=0.8 && R(m.tag).seen.days<3 && R(m.tag).hp>=70)
+    .sort((a,b)=>R(b.tag).hp-R(a.tag).hp);
+  // MVP (fame/deck) + top donor
+  const rated=mem.filter(m=>R(m.tag).tot>0);
+  const mvp=rated.slice().sort((a,b)=>R(b.tag).fpd-R(a.tag).fpd)[0];
+  const donor=mem.slice().sort((a,b)=>(b.donations||0)-(a.donations||0))[0];
+
+  function acItem(m,val,cls){return `<div class="ac-item click" data-tag="${encodeURIComponent(m.tag)}" data-name="${m.name.replace(/"/g,'&quot;')}">
+    <span class="nm">${m.name}</span><span class="vv ${cls||''}">${val}</span></div>`;}
+
+  html+='<div class="ac">';
+  if(inWar){
+    html+=`<div class="ac-card ac-red"><div class="ac-top">⚔ Decks owed today<span class="cnt">${owed.reduce((s,x)=>s+x.left,0)}</span></div><div class="ac-body">`;
+    html+= owed.length? owed.slice(0,8).map(x=>acItem(x.m,x.left+' left','bad')).join('')
+      : '<div class="ac-empty">Everyone has battled today ✓</div>';
+    html+='</div></div>';
+  }
+  html+=`<div class="ac-card ac-blue"><div class="ac-top">🔴 Kick candidates<span class="cnt">${kick.length}</span></div><div class="ac-body">`;
+  html+= kick.length? kick.slice(0,6).map(m=>acItem(m,R(m.tag).seen.txt,'bad')).join('')
+    : '<div class="ac-empty">No dead weight — clan is healthy ✓</div>';
+  html+='</div></div>';
+  html+=`<div class="ac-card ac-green"><div class="ac-top">🟢 Promote<span class="cnt">${promo.length}</span></div><div class="ac-body">`;
+  html+= promo.length? promo.slice(0,6).map(m=>acItem(m,'HP '+R(m.tag).hp,'good')).join('')
+    : '<div class="ac-empty">No standout members to promote yet</div>';
+  html+='</div></div>';
+  html+=`<div class="ac-card ac-gold"><div class="ac-top">⭐ Standouts<span class="cnt"></span></div><div class="ac-body">`;
+  if(mvp) html+=acItem(mvp,R(mvp.tag).fpd+' fame/deck','good');
+  if(donor&&(donor.donations||0)>0) html+=acItem(donor,(donor.donations)+' donated','good');
+  if(!mvp&&!(donor&&donor.donations)) html+='<div class="ac-empty">No war data yet</div>';
+  html+='</div></div>';
+  html+='</div>';
 
   // current war standings
   if(inWar && (war.standings||[]).length){
@@ -952,21 +1045,38 @@ function render(c){
     <button class="dl" onclick="runForecast()" style="border:none;cursor:pointer">⚡ Run Forecast</button>
   </div>`;
 
-  // roster
+  // roster (sortable)
+  const sortKey=window._sortKey||'rank';
+  const sorters={
+    rank:(a,b)=>a.clanRank-b.clanRank,
+    trophies:(a,b)=>b.trophies-a.trophies,
+    donations:(a,b)=>(b.donations||0)-(a.donations||0),
+    eff:(a,b)=>R(b.tag).fpd-R(a.tag).fpd,
+    active:(a,b)=>R(a.tag).seen.days-R(b.tag).seen.days,
+    health:(a,b)=>R(b.tag).hp-R(a.tag).hp,
+    missed:(a,b)=>R(b.tag).missed-R(a.tag).missed,
+  };
+  const sorted=[...mem].sort(sorters[sortKey]||sorters.rank);
+  const SB=[['rank','Rank'],['health','Health'],['trophies','Trophies'],
+    ['donations','Donations'],['eff','War eff'],['missed','Missed'],['active','Last active']];
   html+=`<div class="bh"><h2>The Roster</h2>
     <span class="sub">${inWar?'WAR WEEK · ':''}LAST ${weeks.length} WARS TRACKED · ${mem.length} STANDING</span></div>`;
+  html+='<div class="sortbar">'+SB.map(s=>
+    `<button class="sortbtn ${sortKey===s[0]?'on':''}" onclick="setSort('${s[0]}')">${s[1]}</button>`).join('')+'</div>';
   html+='<div class="panel">';
-  for(const m of mem){
+  for(const m of sorted){
     const role=ROLE[m.role]||ROLE.member;
     const pct=Math.round(m.trophies/maxT*100);
-    const g=m.donations||0, rec=record[m.tag]||{tot:0,missed:0,played:0};
-    const seen=ago(m.lastSeen);
+    const rec=record[m.tag]||{tot:0,missed:0,played:0,hp:0,seen:{txt:'',days:0}};
+    const g=m.donations||0;
+    const seen=rec.seen;
     const p=parts[m.tag]||{}; const used=p.decksUsed||0;
     const lvl=(m.expLevel&&m.expLevel>0)?` · lvl ${m.expLevel}`:'';
+    const hpCol=rec.hp>=70?'var(--green)':rec.hp>=40?'var(--bronze)':'var(--red)';
     html+=`<div class="row click" data-tag="${encodeURIComponent(m.tag)}" data-name="${m.name.replace(/"/g,'&quot;')}">
       <div class="rank ${m.clanRank<=3?'top':''}">${m.clanRank}</div>
       <div class="who">
-        <div class="name"><span class="shield" style="background:${role.c}"></span>${m.name}</div>
+        <div class="name"><span class="shield" style="background:${role.c}"></span>${m.name}<span class="hp" title="Health ${rec.hp}/100"><i style="width:${rec.hp}%;background:${hpCol}"></i></span></div>
         <div class="role">${role.label}${lvl} · <span class="${seen.days>=3?'away':''}">${seen.txt}</span></div>
       </div>
       <div class="trophies"><span class="tnum">🏆 ${m.trophies.toLocaleString()}</span>
@@ -999,13 +1109,29 @@ function render(c){
   document.getElementById('body').innerHTML=html;
 }
 
+function setSort(k){window._sortKey=k; if(window._lastClan) render(window._lastClan);}
+
+let _next=60;
 async function load(){
   try{
     const r=await fetch('/api/clan');const c=await r.json();render(c);
     document.getElementById('updated').textContent='Live · updated '+new Date().toLocaleTimeString();
+    _next=60;
   }catch(e){document.getElementById('updated').textContent='connection lost — retrying';}
 }
 load();setInterval(load,60000);
+// live countdown to next refresh
+setInterval(()=>{_next=Math.max(0,_next-1);
+  const el=document.getElementById('updated');
+  if(el&&el.textContent.startsWith('Live')){
+    el.dataset.base=el.dataset.base||el.textContent;
+  }
+},1000);
+// keyboard: "/" focuses search, Esc closes modal
+document.addEventListener('keydown',e=>{
+  if(e.key==='/'&&document.activeElement.id!=='q'){e.preventDefault();document.getElementById('q').focus();}
+  if(e.key==='Escape')closeCard();
+});
 </script></body></html>"""
 
 
