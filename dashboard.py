@@ -1057,21 +1057,18 @@ function render(c){
     return fullWeek(m.tag,recentWeeks[0]) && fullWeek(m.tag,recentWeeks[1]);
   }).sort((a,b)=>R(b.tag).hp-R(a.tag).hp);
 
-  // MVP (war fighter): highest fame-per-deck in the most recent COMPLETED
-  // war — the Thu–Sun race that just finished. The war log only holds
-  // finished races, so this changes ONLY when a new war completes (i.e. it
-  // refreshes every Monday) and stays fixed during the live war, always
-  // reflecting one full completed week.
+  // Top war fighters: ranked by TOTAL FAME earned in the most recent
+  // COMPLETED war (the Thu–Sun race that just finished). Total fame rewards
+  // overall output — showing up AND winning — not just per-deck efficiency.
+  // Refreshes every Monday when a new war lands in the log; stable during
+  // the live war.
   const lastWar=[...weeks].sort().reverse()[0];   // newest completed war date
-  let mvp=null, mvpFpd=0;
+  let topFighters=[];
   if(lastWar){
-    mem.forEach(m=>{
+    topFighters=mem.map(m=>{
       const r=(mh[m.tag]||{})[lastWar];
-      if(r && r.decks>0){
-        const fpd=r.fame/r.decks;
-        if(fpd>mvpFpd){mvpFpd=fpd; mvp=m;}
-      }
-    });
+      return r ? {m, fame:r.fame||0, decks:r.decks||0} : null;
+    }).filter(x=>x && x.fame>0).sort((a,b)=>b.fame-a.fame).slice(0,5);
   }
   // Top donor — this week's donations (the game resets these every Monday).
   const donor=mem.slice().sort((a,b)=>(b.donations||0)-(a.donations||0))[0];
@@ -1098,10 +1095,21 @@ function render(c){
   html+= promo.length? promo.slice(0,6).map(m=>acItem(m,'maxed ×2 wks','good')).join('')
     : '<div class="ac-empty">Nobody maxed war two weeks running</div>';
   html+='</div></div>';
-  html+=`<div class="ac-card ac-gold"><div class="ac-top">⭐ Standouts<span class="cnt"></span></div><div class="ac-body">`;
-  if(mvp) html+=acItem(mvp,Math.round(mvpFpd)+' fame/deck · last war','good');
-  if(donor&&(donor.donations||0)>0) html+=acItem(donor,donor.donations+' donated · this wk','good');
-  if(!mvp&&!(donor&&donor.donations)) html+='<div class="ac-empty">No completed war yet</div>';
+  html+=`<div class="ac-card ac-gold"><div class="ac-top">⭐ Top fighters · last war<span class="cnt">${topFighters.length}</span></div><div class="ac-body">`;
+  if(topFighters.length){
+    topFighters.forEach((x,i)=>{
+      html+=`<div class="ac-item click" data-tag="${encodeURIComponent(x.m.tag)}" data-name="${x.m.name.replace(/"/g,'&quot;')}">
+        <span class="nm">${i+1}. ${x.m.name}</span><span class="vv good">${x.fame.toLocaleString()} fame</span></div>`;
+    });
+    if(donor&&(donor.donations||0)>0){
+      html+=`<div class="ac-item click" data-tag="${encodeURIComponent(donor.tag)}" data-name="${donor.name.replace(/"/g,'&quot;')}" style="border-top:1px solid var(--line);margin-top:4px;padding-top:9px">
+        <span class="nm">🎁 ${donor.name}</span><span class="vv good">${donor.donations} donated · this wk</span></div>`;
+    }
+  } else if(donor&&(donor.donations||0)>0){
+    html+=acItem(donor,donor.donations+' donated · this wk','good');
+  } else {
+    html+='<div class="ac-empty">No completed war yet</div>';
+  }
   html+='</div></div>';
   html+='</div>';
 
